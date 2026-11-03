@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/*
+!data/.gitkeep
+.pytest_cache/
+gex.env
+cloud.env
+*.zip
+.streamlit/secrets.toml
+STREAMLIT_SECRETS.txt

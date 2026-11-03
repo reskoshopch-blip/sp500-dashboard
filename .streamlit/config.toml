@@ -1,0 +1,23 @@
+# Dunkel ist Standard; Hell ist im Menü ⋮ → Settings → Theme wählbar.
+[theme]
+base = "dark"
+font = "sans serif"
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#f0efec"
+
+[theme.light]
+primaryColor = "#2a78d6"
+backgroundColor = "#f9f9f7"
+secondaryBackgroundColor = "#fcfcfb"
+textColor = "#0b0b0b"
+
+[server]
+headless = true
+runOnSave = false
+
+[browser]
+gatherUsageStats = false
