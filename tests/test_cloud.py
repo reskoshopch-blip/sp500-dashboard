@@ -122,3 +122,28 @@ def test_gateway_storage_roundtrip():
     from src.cloud.storage import CloudError
     with pytest.raises(CloudError):
         bad.upload("x", b"1")
+
+
+def test_gateway_download_many_and_pull():
+    from src.cloud.storage import GatewayStorage
+    store = {"manifest.json": json.dumps({"synced_at": "x", "files": [
+        {"path": "a.txt", "remote": "a.txt", "sha256": "1", "gzip": False},
+        {"path": "ml/b.txt", "remote": "ml/b.txt", "sha256": "2", "gzip": False}]}).encode(),
+        "a.txt": b"A", "ml/b.txt": b"B"}
+    calls = []
+
+    def handler(req: httpx.Request):
+        if req.url.path.endswith("/functions/v1/dashboard-storage"):
+            body = json.loads(req.content)
+            calls.append(len(body["paths"]))
+            return httpx.Response(200, json={"urls": [{"path": p, "signedUrl": f"https://x.supabase.co/signed/{p}"}
+                                                      for p in body["paths"]]})
+        return httpx.Response(200, content=store[req.url.path.split("/signed/")[1]])
+
+    g = GatewayStorage("https://x.supabase.co", "t", transport=httpx.MockTransport(handler))
+    import tempfile
+    from pathlib import Path
+    d = Path(tempfile.mkdtemp())
+    res = P.pull(d, storage=g)
+    assert sorted(res["changed"]) == ["a.txt", "ml/b.txt"] and (d / "ml" / "b.txt").read_bytes() == b"B"
+    assert calls == [1, 2]          # 1× Manifest, 1× alle Dateien in einem Aufruf

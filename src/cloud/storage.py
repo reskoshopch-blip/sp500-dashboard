@@ -107,3 +107,19 @@ class GatewayStorage(Storage):
     def download(self, path: str) -> bytes:
         url = self._sign("download", path)
         return self._retry(lambda: self.client.get(url)).content
+
+    def download_many(self, paths: list[str], workers: int = 8) -> dict[str, bytes]:
+        """Viele Dateien auf einmal: signierte URLs in Blöcken à 100, Downloads parallel."""
+        from concurrent.futures import ThreadPoolExecutor
+        urls: dict[str, str] = {}
+        for i in range(0, len(paths), 100):
+            chunk = paths[i:i + 100]
+            r = self._retry(lambda: self.client.post(self.fn, json={"action": "download", "paths": chunk},
+                                                      headers={"x-dashboard-token": self.token}))
+            for item in r.json()["urls"]:
+                if not item.get("signedUrl"):
+                    raise FileNotFoundError(item.get("error") or item.get("path"))
+                urls[item["path"]] = item["signedUrl"]
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            data = list(ex.map(lambda p: self._retry(lambda: self.client.get(urls[p])).content, paths))
+        return dict(zip(paths, data))

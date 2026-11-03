@@ -42,6 +42,17 @@ def select_files(data_dir: Path) -> list[Path]:
     return sorted({f for f in files if f.relative_to(data_dir).as_posix() not in SKIP})
 
 
+def _refresh_gex_model(data_dir: Path) -> None:
+    """GEX-Auswertung (model.json) nachrechnen, falls sie fehlt oder älter als die Schnappschüsse ist."""
+    snaps, model = data_dir / "gex" / "snapshots.parquet", data_dir / "gex" / "model.json"
+    if snaps.exists() and (not model.exists() or model.stat().st_mtime < snaps.stat().st_mtime):
+        try:
+            from src.gex.learn import run as gex_learn
+            gex_learn()
+        except Exception as exc:  # noqa: BLE001 - Upload trotzdem fortsetzen
+            print(f"  Hinweis: GEX-Auswertung nicht möglich ({exc})")
+
+
 def sha256(p: Path) -> str:
     h = hashlib.sha256()
     with open(p, "rb") as fh:
@@ -60,6 +71,7 @@ def sync(force: bool = False, storage: Storage | None = None, progress=print) ->
             old = {f["path"]: f for f in json.loads(local_manifest.read_text(encoding="utf-8"))["files"]}
         except (ValueError, KeyError):
             old = {}
+    _refresh_gex_model(data_dir)
     own = storage is None
     storage = storage or Storage.from_env()
     entries, uploaded, total = [], [], 0

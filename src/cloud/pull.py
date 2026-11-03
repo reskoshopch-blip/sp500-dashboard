@@ -36,15 +36,17 @@ def pull(data_dir: Path, storage: Storage | None = None) -> dict:
             except (ValueError, KeyError):
                 have = {}
         changed = []
-        for f in manifest["files"]:
+        todo = [f for f in manifest["files"]
+                if not (have.get(f["path"]) == f["sha256"] and (data_dir / f["path"]).exists())]
+        blobs = storage.download_many([f["remote"] for f in todo]) if todo and hasattr(storage, "download_many") \
+            else {}
+        for f in todo:
             target = data_dir / f["path"]
-            if have.get(f["path"]) == f["sha256"] and target.exists():
-                continue
-            data = storage.download(f["remote"])
+            data = blobs[f["remote"]] if f["remote"] in blobs else storage.download(f["remote"])
             if f.get("gzip"):
                 data = gzip.decompress(data)
             target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(target.name + ".tmp")
+            tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
             tmp.write_bytes(data)
             os.replace(tmp, target)
             changed.append(f["path"])
