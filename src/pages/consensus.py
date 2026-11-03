@@ -26,7 +26,7 @@ def frame(version: float, data_dir: str) -> pd.DataFrame:
 def _version() -> float:
     d = get_settings().data_dir
     ps = [d / "ml" / "health_SPY_daily.parquet", d / "fundamental" / "fund_SPY_daily.parquet",
-          d / "cot" / "SPX_weekly.parquet", d / "ml" / "top_SPY_daily.parquet"]
+          d / "cot" / "SPX_weekly.parquet", d / "ml" / "top_SPY_daily.parquet", d / "geo" / "champagne_daily.parquet"]
     return sum(p.stat().st_mtime for p in ps if p.exists())
 
 

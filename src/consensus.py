@@ -18,7 +18,8 @@ from src.config import get_settings
 
 MODELS = {"H_kurz": "Markt-Terminal kurzfristig", "H_mittel": "Markt-Terminal mittelfristig",
           "H_lang": "Markt-Terminal langfristig", "F_gesamt": "Fundamental gesamt",
-          "ML3M": "Fundamental-ML (Chance 3 M.)", "COT": "COT-Score S&P 500", "TOP": "Top-Warnung (keine Ampel)"}
+          "ML3M": "Fundamental-ML (Chance 3 M.)", "COT": "COT-Score S&P 500", "TOP": "Top-Warnung (keine Ampel)",
+          "CHAMP": "Champagner-Index"}
 DEFAULT = ["H_kurz", "H_mittel", "H_lang", "F_gesamt", "ML3M", "COT"]
 
 
@@ -50,6 +51,12 @@ def load_frame() -> pd.DataFrame:
         td = pd.read_parquet(t, columns=["date", "ampel_score"])
         td["date"] = pd.to_datetime(td["date"])
         out["TOP"] = (100 - 25 * td.set_index("date")["ampel_score"]).clip(0, 100).reindex(out.index)
+    g = d / "geo" / "champagne_daily.parquet"
+    if g.exists():
+        gd = pd.read_parquet(g, columns=["date", "score_learned"])
+        gd["date"] = pd.to_datetime(gd["date"])
+        out["CHAMP"] = gd.set_index("date")["score_learned"].reindex(out.index, method="ffill",
+                                                                      tolerance=pd.Timedelta(days=5))
     return out[out["close"].notna()]
 
 

@@ -59,13 +59,16 @@ def page() -> None:
         st.dataframe(places, hide_index=True, width="stretch",
                      column_config={"vs. normal %": st.column_config.NumberColumn(format="%+.0f %%")})
     elif cur.get("source") == "html":
-        st.caption("Einzelwerte der Pizzerien waren nicht abrufbar – nur die DOUGHCON-Stufe der Startseite.")
+        st.caption("Einzelwerte der Pizzerien waren nicht abrufbar (PizzINT lädt sie erst im Browser nach) – nur die "
+                   "DOUGHCON-Stufe der Startseite.")
 
     h = load_history()
     if len(h) >= 2:
         plot(history_chart(h, theme_mode()), "pizza_hist")
     else:
-        st.caption("Der Verlauf entsteht mit jeder Messung (alle 30 Minuten, solange der PC läuft).")
+        st.caption("Historische Daten gibt es nicht: Google speichert die Live-Auslastung nicht, und PizzINT bietet "
+                   "keine Historie an. Der Verlauf entsteht ab jetzt mit jeder Messung (alle 30 Minuten, solange "
+                   "der PC läuft).")
     with st.expander("Wie verlässlich ist das?"):
         st.markdown(
             "- Bekannte Beispiele: Golfkrieg 1991, Grenada 1983, Juni 2025 (Iran) – Anekdoten, keine Statistik.\n"
