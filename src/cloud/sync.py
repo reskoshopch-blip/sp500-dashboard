@@ -21,7 +21,7 @@ from src.utils import atomic_write_text
 TOP_FILES = ["sp500_balance_sheets.duckdb", "pipeline_status.json", "constituents_snapshot.csv",
              "constituents_changes_snapshot.csv", "nikkei225_constituents.csv"]
 FOLDERS = {"ml": ("*.parquet", "*.json"), "ml/models": ("*.joblib",), "fundamental": ("*.parquet", "*.json"),
-           "cot": ("*.parquet", "*.json"), "gex": ("*.parquet", "*.json")}
+           "cot": ("*.parquet", "*.json"), "gex": ("*.parquet", "*.json"), "geo": ("*.parquet", "*.json")}
 GZIP = {"sp500_balance_sheets.duckdb"}
 SKIP = {"fundamental/cot.parquet", "fundamental/cot_markets.parquet"}   # Rohdaten, von der App nicht benötigt
 
@@ -61,7 +61,7 @@ def sha256(p: Path) -> str:
     return h.hexdigest()
 
 
-def sync(force: bool = False, storage: Storage | None = None, progress=print) -> dict:
+def sync(force: bool = False, storage: Storage | None = None, progress=print, only: str | None = None) -> dict:
     s = get_settings()
     data_dir = s.data_dir
     local_manifest = data_dir / ".cloud_manifest.json"
@@ -71,12 +71,20 @@ def sync(force: bool = False, storage: Storage | None = None, progress=print) ->
             old = {f["path"]: f for f in json.loads(local_manifest.read_text(encoding="utf-8"))["files"]}
         except (ValueError, KeyError):
             old = {}
-    _refresh_gex_model(data_dir)
+    if only and not old:          # ohne bisheriges Manifest immer alles hochladen
+        only = None
+    if not only:
+        _refresh_gex_model(data_dir)
     own = storage is None
     storage = storage or Storage.from_env()
     entries, uploaded, total = [], [], 0
     try:
-        for p in select_files(data_dir):
+        files = select_files(data_dir)
+        if only:
+            files = [p for p in files if p.relative_to(data_dir).as_posix().startswith(only.rstrip("/") + "/")]
+            mine = {p.relative_to(data_dir).as_posix() for p in files}
+            entries = [e for r, e in old.items() if r not in mine and (data_dir / r).exists()]
+        for p in files:
             rel = p.relative_to(data_dir).as_posix()
             digest = sha256(p)
             gz = rel in GZIP
@@ -104,9 +112,10 @@ def sync(force: bool = False, storage: Storage | None = None, progress=print) ->
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Dashboard-Ergebnisse nach Supabase hochladen")
     ap.add_argument("--force", action="store_true", help="alle Dateien neu hochladen")
+    ap.add_argument("--only", help="nur diesen Ordner hochladen (z.B. geo), Rest des Manifests bleibt")
     a = ap.parse_args(argv)
     try:
-        r = sync(a.force)
+        r = sync(a.force, only=a.only)
     except CloudError as exc:
         print(f"FEHLER: {exc}", file=sys.stderr)
         return 2

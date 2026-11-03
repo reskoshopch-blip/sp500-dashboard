@@ -147,3 +147,20 @@ def test_gateway_download_many_and_pull():
     res = P.pull(d, storage=g)
     assert sorted(res["changed"]) == ["a.txt", "ml/b.txt"] and (d / "ml" / "b.txt").read_bytes() == b"B"
     assert calls == [1, 2]          # 1× Manifest, 1× alle Dateien in einem Aufruf
+
+
+def test_sync_only_folder_keeps_manifest(tmp_path, monkeypatch):
+    src = tmp_path / "pc"
+    src.mkdir()
+    _data(src)
+    monkeypatch.setenv("DATA_DIR", str(src))
+    store, log = {}, []
+    r = S.sync(storage=fake_storage(store, log), progress=lambda *_: None)
+    (src / "geo").mkdir()
+    (src / "geo" / "pizza_latest.json").write_text('{"level": 4}')
+    (src / "ml" / "models" / "m.joblib").write_bytes(b"geaendert")      # darf bei --only geo nicht hoch
+    log.clear()
+    r2 = S.sync(storage=fake_storage(store, log), progress=lambda *_: None, only="geo")
+    assert r2["uploaded"] == ["geo/pizza_latest.json"]
+    paths = {f["path"] for f in json.loads(store["manifest.json"])["files"]}
+    assert len(paths) == r["n_files"] + 1 and "geo/pizza_latest.json" in paths

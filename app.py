@@ -24,7 +24,7 @@ from src.components.data import db_exists
 from src.components.ui import CSS
 from src.config import ConfigError, get_settings
 from src.pages import (compare, consensus, cot, data_admin, fundamental, gex, method, ml_backtest, ml_effects, ml_forecast, ml_regime, ml_terminal, ml_top,
-                       overview,
+                       overview, pizza,
                        profile, quality, sectors, table)
 
 st.set_page_config(page_title="S&P 500 Balance Sheet Intelligence", page_icon="📊", layout="wide")
@@ -84,6 +84,7 @@ if db_exists():
                     url_path="fundamental"),
             st.Page(cot.page, title="COT-Signale", icon=":material/groups:", url_path="cot"),
             st.Page(gex.page, title="Gamma Exposure (GEX)", icon=":material/bolt:", url_path="gex"),
+            st.Page(pizza.page, title="Pizza-Index (Konflikt)", icon=":material/local_pizza:", url_path="pizza"),
             st.Page(consensus.page, title="Modell-Konsens S&P 500", icon=":material/how_to_vote:", url_path="konsens"),
             st.Page(ml_forecast.page, title="ML-Prognosen", icon=":material/insights:", url_path="ml-prognosen"),
             st.Page(ml_backtest.page, title="ML-Backtest", icon=":material/history:", url_path="ml-backtest"),
