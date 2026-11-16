@@ -21,7 +21,8 @@ from src.utils import atomic_write_text
 TOP_FILES = ["sp500_balance_sheets.duckdb", "pipeline_status.json", "constituents_snapshot.csv",
              "constituents_changes_snapshot.csv", "nikkei225_constituents.csv"]
 FOLDERS = {"ml": ("*.parquet", "*.json"), "ml/models": ("*.joblib",), "fundamental": ("*.parquet", "*.json"),
-           "cot": ("*.parquet", "*.json"), "gex": ("*.parquet", "*.json"), "geo": ("*.parquet", "*.json")}
+           "cot": ("*.parquet", "*.json"), "gex": ("*.parquet", "*.json"), "geo": ("*.parquet", "*.json"),
+           "ipo": ("*.parquet", "*.json")}
 GZIP = {"sp500_balance_sheets.duckdb"}
 SKIP = {"fundamental/cot.parquet", "fundamental/cot_markets.parquet"}   # Rohdaten, von der App nicht benötigt
 

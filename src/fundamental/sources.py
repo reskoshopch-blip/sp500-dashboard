@@ -72,8 +72,34 @@ def fred_downloader(sid: str, client: httpx.Client | None = None) -> pd.Series:
     raise RuntimeError(f"FRED {sid}: {last}")
 
 
+# Ersatz über Yahoo Finance, wenn FRED vom PC aus nicht erreichbar ist (z.B. DNS-/Firewall-Sperre).
+# Marktbasierte Reihen lassen sich gut nachbilden; Konjunkturdaten (Arbeitsmarkt, Inflation) nicht.
+YAHOO_PROXY = {"DGS10": "^TNX", "DGS3MO": "^IRX", "DCOILWTICO": "CL=F", "DCOILBRENTEU": "BZ=F",
+               "PCOPPUSDM": "HG=F", "DTWEXBGS": "DX-Y.NYB", "DEXJPUS": "JPY=X"}
+
+
+def yahoo_proxy(sids: list[str], downloader: Callable | None = None) -> dict[str, pd.Series]:
+    want = {sid: YAHOO_PROXY[sid] for sid in sids if sid in YAHOO_PROXY}
+    if not want:
+        return {}
+    if downloader is None:
+        from src.ml.prices import yfinance_downloader as downloader
+    got = downloader(sorted(set(want.values())), "1990-01-01")
+    out = {}
+    for sid, t in want.items():
+        s = got.get(t)
+        if s is None or s.empty:
+            continue
+        s = s.astype(float)
+        if t in ("^TNX", "^IRX") and s.tail(250).median() > 20:      # ältere Yahoo-Notation (×10)
+            s = s / 10
+        out[sid] = s
+    return out
+
+
 def fetch_fred(settings: Settings, ids: list[str], force: bool = False, downloader: Callable | None = None,
-               max_age_hours: float = 18, progress: Callable[[str], None] | None = None) -> dict:
+               max_age_hours: float = 18, progress: Callable[[str], None] | None = None,
+               proxy_downloader: Callable | None = None) -> dict:
     d = fund_dir(settings, "fred")
     ok, failed, cached = [], {}, []
     client = None
@@ -100,7 +126,16 @@ def fetch_fred(settings: Settings, ids: list[str], force: bool = False, download
     finally:
         if client:
             client.close()
-    return {"ok": ok, "cached": cached, "failed": failed}
+    proxy = []
+    if failed and (downloader is None or proxy_downloader is not None):
+        try:
+            for sid, ser in yahoo_proxy(list(failed), proxy_downloader).items():
+                ser.rename("value").rename_axis("date").reset_index().to_parquet(d / f"{sid}.parquet", index=False)
+                failed.pop(sid, None)
+                proxy.append(sid)
+        except Exception:  # noqa: BLE001 - Ersatz ist optional
+            pass
+    return {"ok": ok, "cached": cached, "failed": failed, "proxy": proxy}
 
 
 def load_fred(settings: Settings, ids: list[str]) -> dict[str, pd.Series]:

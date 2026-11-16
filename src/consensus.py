@@ -20,7 +20,8 @@ MODELS = {"H_kurz": "Markt-Terminal kurzfristig", "H_mittel": "Markt-Terminal mi
           "H_lang": "Markt-Terminal langfristig", "F_gesamt": "Fundamental gesamt",
           "ML3M": "Fundamental-ML (Chance 3 M.)", "COT": "COT-Score S&P 500", "TOP": "Top-Warnung (keine Ampel)",
           "CHAMP": "Champagner-Index"}
-DEFAULT = ["H_kurz", "H_mittel", "H_lang", "F_gesamt", "ML3M", "COT"]
+# COT S&P 500 hatte im Test keinen Vorteil (Winrate 49 %, PF 0.96) → standardmässig nicht im Konsens, aber wählbar
+DEFAULT = ["H_kurz", "H_mittel", "H_lang", "F_gesamt", "ML3M"]
 
 
 def load_frame() -> pd.DataFrame:

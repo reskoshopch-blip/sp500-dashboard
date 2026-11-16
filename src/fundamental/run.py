@@ -143,7 +143,8 @@ def run(offline: bool = False, force: bool = False) -> dict:
                           "as_of": str(d["date"].iloc[-1].date())}
         meta = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "markets": metas, "pe_anchor": ern.get("anchor", {}), "n_firms_ttm": ern.get("n_firms_ttm"),
-                "fred_failed": info.get("fred", {}).get("failed", {}), "cot": info.get("cot", {}),
+                "fred_failed": info.get("fred", {}).get("failed", {}),
+                "fred_proxy": info.get("fred", {}).get("proxy", []), "cot": info.get("cot", {}),
                 "fred_available": sorted(fred), "cot_rows": int(len(cot))}
         atomic_write_text(out_dir / "meta.json", json.dumps(meta, ensure_ascii=False, indent=1, default=_json))
         ok = [k for k, v in metas.items() if "error" not in v]

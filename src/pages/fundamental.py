@@ -125,6 +125,8 @@ def page() -> None:
     if meta.get("missing"):
         st.caption("Für diesen Markt nicht verfügbar (Quelle fehlt oder zu kurze Historie): " + ", ".join(meta["missing"]))
     gm = data["meta"]
+    if gm.get("fred_proxy"):
+        st.caption("FRED nicht erreichbar – Ersatz über Yahoo Finance für: " + ", ".join(gm["fred_proxy"]))
     if gm.get("fred_failed"):
         st.caption("Nicht geladene FRED-Reihen: " + ", ".join(gm["fred_failed"]))
     st.caption(DISCLAIMER)

@@ -74,7 +74,9 @@ def page() -> None:
         last = w.iloc[-1]
         prev = w.iloc[-2] if len(w) > 1 else last
         s_now = sig.iloc[-1]
+        edge = _edge(w, sig, pd.Timestamp(start) if start else None)
         rows.append({"Markt": MARKETS[k]["label"], "Stichtag": w.index[-1].date(), "Index": last[method],
+                     "Bewährt?": edge,
                      "Signal": ICON.get(int(s_now), "–") if pd.notna(s_now) else "–",
                      "Seit": _since(sig), "Spekulanten netto (Kontrakte)": last["nc_contracts"],
                      "Δ Woche": last["nc_contracts"] - prev["nc_contracts"],
@@ -89,7 +91,9 @@ def page() -> None:
         "Winrate": st.column_config.NumberColumn(format="percent")})
     st.caption("„Spekulanten netto“ = Non-Commercials long minus short (die Zahl aus dem Wirtschaftskalender). "
                "Modell p.a. / Winrate: historischer Test des Signals mit den gewählten Schwellen (nur Wochen, in denen "
-               "das Modell bereits aus der Vergangenheit gelernt hatte; 0.05 % Kosten je Wechsel).")
+               "das Modell bereits aus der Vergangenheit gelernt hatte; 0.05 % Kosten je Wechsel). „Bewährt?“: war das "
+               "aktuelle Signal früher nach 13 Wochen mindestens 5 Prozentpunkte öfter richtig als der Durchschnitt? "
+               "Bei ❌ das Signal nur als Info lesen – historisch hatte es dort keinen Vorteil.")
 
     key = st.radio("Markt im Detail", list(data["weekly"]), horizontal=True, key="cot_mkt",
                    format_func=lambda k: MARKETS[k]["label"])
@@ -97,6 +101,22 @@ def page() -> None:
     with st.expander("Wie funktioniert das COT-Modell?"):
         st.markdown(METHOD)
     st.caption(DISCLAIMER)
+
+
+def _edge(w: pd.DataFrame, sig: pd.Series, start) -> str:
+    """Hatte das aktuelle Signal historisch einen Vorteil? Long: öfter im Plus nach 13 Wochen als im Schnitt
+    (≥ 5 Prozentpunkte), Short: öfter im Minus. Sonst ❌ – das Signal dann nur als Info lesen."""
+    try:
+        t = by_signal(w, sig, start).set_index("Signal")
+        base = t.loc["Alle Wochen", "positiv 13 W."]
+        now = sig.dropna().iloc[-1]
+        if now > 0:
+            return "✅ Long bewährt" if t.loc["Long", "positiv 13 W."] - base >= 0.05 else "❌ Long ohne Vorteil"
+        if now < 0:
+            return "✅ Short bewährt" if base - t.loc["Short", "positiv 13 W."] >= 0.05 else "❌ Short ohne Vorteil"
+        return "–"
+    except (KeyError, IndexError, ValueError):
+        return "–"
 
 
 def _since(sig: pd.Series) -> str:
