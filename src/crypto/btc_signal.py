@@ -1,9 +1,10 @@
 """BTC Spot-Absorption-Signal (aus der Hyblock-Analyse vom 23.11.2026).
 
-Regel (Long): BTC fällt in 24 Stunden um mehr als 3 %, aber das Binance-Spot-CVD der letzten 24 Stunden ist
-positiv – echte Spot-Käufer nehmen den Abverkauf auf. Exit über festen Take Profit / Stop Loss.
+Regel (Long): BTC fällt im Fenster (Standard 24 Stunden) um mehr als X % (Standard 3 %), aber das Binance-Spot-CVD
+im selben Fenster ist positiv – echte Spot-Käufer nehmen den Abverkauf auf. Exit über festen Take Profit / Stop Loss.
+Zeiteinheiten 15 Min, 1 Std und 4 Std; getestet (Hyblock, 2 Jahre) ist nur 1 Std mit 24h-Fenster.
 
-Datenquelle: öffentliche Binance-Kerzen (BTCUSDT Spot, 1h) über data-api.binance.vision – kein API-Schlüssel
+Datenquelle: öffentliche Binance-Kerzen (BTCUSDT Spot) über data-api.binance.vision – kein API-Schlüssel
 nötig, funktioniert auch auf Streamlit Cloud. Das Volumen-Delta wird aus dem Taker-Kaufvolumen berechnet
 (Delta = Taker-Kauf − Taker-Verkauf, in USDT). Das entspricht Hyblocks "Volume Delta, Binance Spot, 0 – ∞".
 """
@@ -18,24 +19,45 @@ import pandas as pd
 
 KLINES_URL = "https://data-api.binance.vision/api/v3/klines"
 HOUR_MS = 3_600_000
+TF_MIN = {"15m": 15, "1h": 60, "4h": 240}
+# Startwerte je Zeiteinheit. Nur "1h" ist mit Hyblock gebacktestet; 15m/4h sind skaliert und im Backtest zu prüfen.
+PRESETS = {
+    "15m": {"label": "15 Min (kurzfristig)", "window_h": 4, "drop": 1.5, "tp": 1.0, "sl": 2.0,
+            "days": 60, "days_opts": [30, 60, 90], "view_days": 7},
+    "1h": {"label": "1 Std (Standard, getestet)", "window_h": 24, "drop": 3.0, "tp": 2.0, "sl": 6.0,
+           "days": 730, "days_opts": [365, 730], "view_days": 90},
+    "4h": {"label": "4 Std (Swing)", "window_h": 72, "drop": 6.0, "tp": 4.0, "sl": 8.0,
+           "days": 1460, "days_opts": [730, 1460], "view_days": 365},
+}
 COLS = ["open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "trades",
         "taker_buy_base", "taker_buy_quote", "ignore"]
 
 
 @dataclass(frozen=True)
 class Rule:
-    drop_pct: float = 3.0      # Preis muss in `window` Stunden um mehr als so viel % fallen
-    window: int = 24           # Stunden für Preisänderung und CVD-Summe
+    drop_pct: float = 3.0      # Preis muss im Fenster um mehr als so viel % fallen
+    window_h: int = 24         # Fenster in Stunden für Preisänderung und CVD-Summe
+    timeframe: str = "1h"      # Kerzengrösse: 15m, 1h oder 4h
     tp_pct: float = 2.0        # Take Profit in %
     sl_pct: float = 6.0        # Stop Loss in %
     fee_pct: float = 0.045     # Gebühr pro Seite in %
     regime_days: int = 200     # Regime: Tagesschluss über (Bull) / unter (Bär) dem gleitenden Schnitt
     bull_only: bool = False    # Signale nur im Bull-Regime handeln
 
+    @property
+    def bar_min(self) -> int:
+        return TF_MIN[self.timeframe]
+
+    @property
+    def window(self) -> int:
+        """Fenster in Kerzen."""
+        return max(1, round(self.window_h * 60 / self.bar_min))
+
 
 def fetch_klines(symbol: str = "BTCUSDT", days: int = 730, client: httpx.Client | None = None,
-                 now_ms: int | None = None) -> pd.DataFrame:
-    """Lädt 1h-Kerzen der letzten `days` Tage (1000 Kerzen pro Anfrage)."""
+                 now_ms: int | None = None, interval: str = "1h") -> pd.DataFrame:
+    """Lädt Kerzen (`interval`: 15m, 1h, 4h, 1d) der letzten `days` Tage (1000 Kerzen pro Anfrage)."""
+    step = {"15m": 900_000, "1h": HOUR_MS, "4h": 4 * HOUR_MS, "1d": 24 * HOUR_MS}[interval]
     now_ms = now_ms or int(time.time() * 1000)
     cur = now_ms - days * 24 * HOUR_MS
     own = client is None
@@ -43,13 +65,14 @@ def fetch_klines(symbol: str = "BTCUSDT", days: int = 730, client: httpx.Client 
     rows: list = []
     try:
         while cur < now_ms:
-            r = client.get(KLINES_URL, params={"symbol": symbol, "interval": "1h", "startTime": cur, "limit": 1000})
+            r = client.get(KLINES_URL, params={"symbol": symbol, "interval": interval, "startTime": cur,
+                                               "limit": 1000})
             r.raise_for_status()
             batch = r.json()
             if not batch:
                 break
             rows.extend(batch)
-            cur = int(batch[-1][0]) + HOUR_MS
+            cur = int(batch[-1][0]) + step
             if len(batch) < 1000:
                 break
     finally:
@@ -72,24 +95,26 @@ def to_frame(rows: list, now_ms: int | None = None) -> pd.DataFrame:
     return df[["ts", "open", "high", "low", "close", "quote_volume", "delta", "closed"]]
 
 
-def compute(df: pd.DataFrame, rule: Rule = Rule()) -> pd.DataFrame:
-    """Fügt 24h-Preisänderung, 24h-Spot-CVD und das Signal hinzu (nur abgeschlossene Kerzen lösen aus)."""
+def compute(df: pd.DataFrame, rule: Rule = Rule(), daily: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Fügt Preisänderung und Spot-CVD im Fenster, das Regime und das Signal hinzu (nur abgeschlossene Kerzen lösen
+    aus). `daily`: Tageskerzen für das Regime; ohne sie wird aus den vorhandenen Kerzen auf Tage verdichtet."""
     out = df.copy()
     w = rule.window
     out["chg_pct"] = (out["close"] / out["close"].shift(w) - 1) * 100
     out["cvd"] = out["delta"].rolling(w).sum()
-    out = add_regime(out, rule.regime_days)
+    out = add_regime(out, rule.regime_days, daily)
     out["signal"] = (out["chg_pct"] < -rule.drop_pct) & (out["cvd"] > 0) & out["closed"]
     if rule.bull_only:
         out["signal"] &= out["regime"] == "Bull"
     return out
 
 
-def add_regime(d: pd.DataFrame, days: int = 200) -> pd.DataFrame:
+def add_regime(d: pd.DataFrame, days: int = 200, daily_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """Bull/Bär aus dem Tagesschluss gegenüber dem gleitenden Durchschnitt über `days` Tage.
     Nur abgeschlossene Tage zählen; der Wert gilt ab dem Folgetag (kein Blick in die Zukunft)."""
     out = d.copy()
-    daily = out.set_index("ts")["close"].resample("1D").last().dropna()
+    src = daily_df if daily_df is not None and len(daily_df) else out
+    daily = src.set_index("ts")["close"].resample("1D").last().dropna()
     sma = daily.rolling(days).mean()
     reg = pd.Series(np.where(daily > sma, "Bull", "Bär"), index=daily.index).where(sma.notna())
     reg.index = reg.index + pd.Timedelta(days=1)          # gilt erst ab dem nächsten Tag
@@ -104,8 +129,9 @@ def regime_runs(d: pd.DataFrame) -> list[tuple[pd.Timestamp, pd.Timestamp, str]]
     r = d[["ts", "regime"]].dropna()
     if r.empty:
         return []
+    bar = r["ts"].diff().median() if len(r) > 1 else pd.Timedelta(hours=1)
     grp = (r["regime"] != r["regime"].shift()).cumsum()
-    return [(g["ts"].iloc[0], g["ts"].iloc[-1] + pd.Timedelta(hours=1), g["regime"].iloc[0])
+    return [(g["ts"].iloc[0], g["ts"].iloc[-1] + bar, g["regime"].iloc[0])
             for _, g in r.groupby(grp)]
 
 
@@ -137,9 +163,11 @@ def backtest(d: pd.DataFrame, rule: Rule = Rule()) -> tuple[pd.DataFrame, dict |
                           "Stop Loss": sl, "Aktuell": cl[-1], "Offen %": (cl[-1] / entry - 1) * 100}
             break
         gross = rule.tp_pct if reason == "Take Profit" else -rule.sl_pct
-        trades.append({"Einstieg": pd.Timestamp(ts[i]), "Regime": reg[i] if isinstance(reg[i], str) else "–", "Ausstieg": pd.Timestamp(ts[exit_j]),
+        trades.append({"Einstieg": pd.Timestamp(ts[i]), "Regime": reg[i] if isinstance(reg[i], str) else "–",
+                       "Ausstieg": pd.Timestamp(ts[exit_j]),
                        "Einstiegspreis": entry, "Ausstiegspreis": tp if reason == "Take Profit" else sl,
-                       "Grund": reason, "Dauer h": exit_j - i, "PnL %": gross - fees})
+                       "Grund": reason, "Dauer h": (exit_j - i) * rule.bar_min / 60,
+                       "PnL %": gross - fees})
         i = exit_j + 1
     return pd.DataFrame(trades), open_trade
 

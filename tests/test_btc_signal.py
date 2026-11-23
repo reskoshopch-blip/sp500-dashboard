@@ -122,3 +122,19 @@ def test_regime_bull_then_bear_and_filter():
     trades, _ = bs.backtest(d, bs.Rule(regime_days=5))
     by = bs.stats_by_regime(trades)
     assert list(by["Regime"]) == ["Bull", "Bär"]
+
+
+def test_timeframes_window_in_bars():
+    assert bs.Rule(timeframe="15m", window_h=4).window == 16
+    assert bs.Rule(timeframe="1h", window_h=24).window == 24
+    assert bs.Rule(timeframe="4h", window_h=72).window == 18
+    for tf, pr in bs.PRESETS.items():
+        assert tf in bs.TF_MIN and pr["days"] in pr["days_opts"]
+
+
+def test_trade_duration_in_hours_for_15m():
+    rule = bs.Rule(timeframe="15m", window_h=4, drop_pct=1.5, tp_pct=1, sl_pct=3)
+    closes = [100.0] * 30 + [98.0, 98.3, 99.2]
+    d = bs.compute(_frame(closes, buy_share=0.6), rule)
+    trades, _ = bs.backtest(d, rule)
+    assert len(trades) == 1 and trades.iloc[0]["Dauer h"] == pytest.approx(0.5)

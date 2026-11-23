@@ -12,57 +12,82 @@ from src.crypto.btc_signal import Rule, backtest, compute, regime_runs, stats, s
 from src.visualization.charts import PALETTE, STATUS, base_layout
 
 
-@st.cache_data(ttl=300, show_spinner="Lade BTC-Kerzen von Binance …")
-def load(days: int) -> pd.DataFrame:
-    return btc_signal.fetch_klines("BTCUSDT", days=days)
+@st.cache_data(ttl=60, show_spinner="Lade BTC-Kerzen von Binance …")
+def load(interval: str, days: int) -> pd.DataFrame:
+    return btc_signal.fetch_klines("BTCUSDT", days=days, interval=interval)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_daily(days: int) -> pd.DataFrame:
+    return btc_signal.fetch_klines("BTCUSDT", days=days, interval="1d")
 
 
 def _mio(v: float) -> str:
     return f"{v / 1e6:+,.1f} Mio. $".replace(",", "'")
 
 
+def _win(h: int) -> str:
+    return f"{h // 24} T" if h >= 48 and h % 24 == 0 else f"{h} h"
+
+
+def _days(d: int) -> str:
+    return f"{d // 365} Jahr{'e' if d >= 730 else ''}" if d >= 365 else f"{d} Tage"
+
+
 def page() -> None:
     st.title("BTC-Signale (Spot-Absorption)")
-    st.caption("Long-Signal, wenn BTC in 24 Stunden um mehr als 3 % fällt, das Binance-Spot-CVD der letzten 24 Stunden "
-               "aber positiv ist – Spot-Käufer nehmen den Abverkauf auf. Daten: Binance BTCUSDT Spot, 1h, "
-               "alle 5 Minuten aktualisiert.")
+    tf = st.segmented_control("Zeiteinheit", list(btc_signal.PRESETS), default="1h", key="btc_tf",
+                              format_func=lambda k: btc_signal.PRESETS[k]["label"]) or "1h"
+    pr = btc_signal.PRESETS[tf]
+    st.caption("Long-Signal, wenn BTC im Fenster deutlich fällt, das Binance-Spot-CVD im selben Fenster aber positiv "
+               "ist – Spot-Käufer nehmen den Abverkauf auf. Daten: Binance BTCUSDT Spot, jede Minute aktualisiert.")
+    if tf != "1h":
+        st.warning("Getestet ist nur «1 Std» mit 24h-Fenster. Die Startwerte für 15 Min und 4 Std sind hochgerechnet – "
+                   "prüf sie im Backtest unten, bevor du danach handelst. Kurzfristig fressen Gebühren und "
+                   "Rauschen einen grossen Teil der Bewegung.")
 
     with st.expander("Einstellungen", expanded=False):
-        c = st.columns(4)
-        drop = c[0].number_input("Preisrückgang 24h grösser als (%)", 1.0, 10.0, 3.0, 0.5, key="btc_drop")
-        tp = c[1].number_input("Take Profit (%)", 0.5, 15.0, 2.0, 0.5, key="btc_tp")
-        sl = c[2].number_input("Stop Loss (%)", 0.5, 15.0, 6.0, 0.5, key="btc_sl")
-        days = c[3].selectbox("Backtest-Zeitraum", [365, 730], index=1, key="btc_days",
-                              format_func=lambda d: f"{d // 365} Jahr{'e' if d > 365 else ''}")
-        bull_only = st.toggle("Nur Signale im Bull-Regime handeln (BTC über dem 200-Tage-Schnitt)", value=False,
-                              key="btc_bull_only")
-        st.caption("Standard (TP 2 % / SL 6 %): hohe Trefferquote, aber ein Verlust kostet drei Gewinne. "
+        c = st.columns(5)
+        win_h = c[0].number_input("Fenster (Stunden)", 1, 240, pr["window_h"], 1, key=f"btc_win_{tf}")
+        drop = c[1].number_input("Preisrückgang grösser als (%)", 0.3, 15.0, pr["drop"], 0.1, key=f"btc_drop_{tf}")
+        tp = c[2].number_input("Take Profit (%)", 0.2, 20.0, pr["tp"], 0.1, key=f"btc_tp_{tf}")
+        sl = c[3].number_input("Stop Loss (%)", 0.2, 20.0, pr["sl"], 0.1, key=f"btc_sl_{tf}")
+        days = c[4].selectbox("Backtest-Zeitraum", pr["days_opts"], index=pr["days_opts"].index(pr["days"]),
+                              key=f"btc_days_{tf}", format_func=_days)
+        c = st.columns([3, 1])
+        bull_only = c[0].toggle("Nur Signale im Bull-Regime handeln (BTC über dem 200-Tage-Schnitt)", value=False,
+                                key="btc_bull_only")
+        fee = c[1].number_input("Gebühr pro Seite (%)", 0.0, 0.5, 0.045, 0.005, format="%.3f", key="btc_fee")
+        st.caption("1 Std Standard (TP 2 % / SL 6 %): hohe Trefferquote, aber ein Verlust kostet drei Gewinne. "
                    "Alternative mit besserem Chance-Risiko-Verhältnis: TP 6 % / SL 4 %.")
-    rule = Rule(drop_pct=drop, tp_pct=tp, sl_pct=sl, bull_only=bull_only)
+    rule = Rule(drop_pct=drop, window_h=int(win_h), timeframe=tf, tp_pct=tp, sl_pct=sl, fee_pct=fee,
+                bull_only=bull_only)
+    w = _win(rule.window_h)
 
     try:
-        raw = load(days + rule.regime_days + 5)   # Vorlauf für den 200-Tage-Schnitt
+        raw = load(tf, days + 3)
+        daily = load_daily(days + rule.regime_days + 10)   # Tageskerzen für das 200-Tage-Regime
     except Exception as exc:  # noqa: BLE001
         st.error(f"Binance-Daten konnten nicht geladen werden: {exc}")
         return
     if len(raw) < rule.window + 2:
         st.info("Noch zu wenige Kerzen für eine Auswertung.")
         return
-    d = compute(raw, rule)
+    d = compute(raw, rule, daily)
     d = d[d["ts"] >= d["ts"].iloc[-1] - pd.Timedelta(days=days)].reset_index(drop=True)
     s = status(d, rule)
     trades, open_trade = backtest(d, rule)
     st_ = stats(trades)
 
     # --- Live-Status ---
-    t = s["ts"].tz_convert("Europe/Zurich") + pd.Timedelta(hours=1)
+    t = s["ts"].tz_convert("Europe/Zurich") + pd.Timedelta(minutes=rule.bar_min)
     c = st.columns(4)
-    c[0].metric("BTC (Schluss letzte Stunde)", f"{s['close']:,.0f} $".replace(",", "'"),
+    c[0].metric(f"BTC (Schluss letzte {'Kerze' if tf != '1h' else 'Stunde'})", f"{s['close']:,.0f} $".replace(",", "'"),
                 f"Stand {t:%d.%m. %H:%M}", delta_color="off")
-    c[1].metric("Preisänderung 24h", f"{s['chg_pct']:+.2f} %",
+    c[1].metric(f"Preisänderung {w}", f"{s['chg_pct']:+.2f} %",
                 "Bedingung erfüllt" if s["price_ok"] else f"fehlt noch {s['missing_drop']:.2f} %",
                 delta_color="normal" if s["price_ok"] else "off")
-    c[2].metric("Spot-CVD 24h (Binance)", _mio(s["cvd"]),
+    c[2].metric(f"Spot-CVD {w} (Binance)", _mio(s["cvd"]),
                 "Spot kauft netto" if s["cvd_ok"] else "Spot verkauft netto",
                 delta_color="normal" if s["cvd_ok"] else "inverse")
     c[3].metric("Signal", "AKTIV" if s["active"] else "kein Signal",
@@ -82,7 +107,7 @@ def page() -> None:
                    f"{s['close'] * (1 + tp / 100):,.0f} $, Stop Loss {s['close'] * (1 - sl / 100):,.0f} $."
                    .replace(",", "'"))
     elif s["cvd_ok"]:
-        st.info(f"Spot kauft bereits netto – das Signal kommt, falls BTC in 24h noch {s['missing_drop']:.2f} % "
+        st.info(f"Spot kauft bereits netto – das Signal kommt, falls BTC im {w}-Fenster noch {s['missing_drop']:.2f} % "
                 f"mehr fällt (unter ca. {s['close'] * (1 - s['missing_drop'] / 100):,.0f} $).".replace(",", "'"))
     else:
         st.caption("Kein Setup: Spot-Käufer fehlen. Ein Preisrückgang allein reicht nicht.")
@@ -101,7 +126,7 @@ def page() -> None:
     c[3].metric("Summe aller Trades", f"{st_['total']:+.1f} %" if st_["n"] else "–")
     c[4].metric("Längste Verlustserie", st_["max_losses"])
 
-    plot(signal_chart(d, trades, theme_mode()), "btc_sig_chart")
+    plot(signal_chart(d, trades, theme_mode(), w, pr["view_days"]), f"btc_sig_chart_{tf}")
 
     if len(trades):
         st.markdown("**Ergebnis nach Marktregime beim Einstieg**")
@@ -127,13 +152,17 @@ def page() -> None:
             "- Seit Mitte 2026 (Abwärtstrend) lief das Signal deutlich schlechter – darum die Regime-Färbung "
             "und der Schalter «Nur Signale im Bull-Regime».\n"
             "- Regime = Tagesschluss über/unter dem 200-Tage-Schnitt, gilt ab dem Folgetag.\n"
-            "- Rund 8 Signale pro Jahr: zu wenige für eine verlässliche Statistik.\n"
+            "- Rund 8 Signale pro Jahr (1 Std): zu wenige für eine verlässliche Statistik.\n"
+            "- 15 Min / 4 Std: nicht mit Hyblock getestet – nur der Backtest auf dieser Seite (Binance-Daten). "
+            "Kurzfristig zählen Gebühren und Slippage stark; der Backtest rechnet mit Einstieg zum Schlusskurs "
+            "ohne Slippage.\n"
             "- Die Werte hier können leicht von Hyblock abweichen (nur BTCUSDT auf Binance Spot, Delta aus "
             "Taker-Volumen).\n"
             "- Als Bestätigung oder Alarm nutzen, nicht als automatisches Handelssystem. Keine Anlageberatung.")
 
 
-def signal_chart(d: pd.DataFrame, trades: pd.DataFrame, mode: str) -> go.Figure:
+def signal_chart(d: pd.DataFrame, trades: pd.DataFrame, mode: str, win: str = "24 h",
+                 view_days: int = 90) -> go.Figure:
     p = PALETTE[mode]
     x = d["ts"].dt.tz_convert("Europe/Zurich")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.68, 0.32], vertical_spacing=0.05)
@@ -160,19 +189,21 @@ def signal_chart(d: pd.DataFrame, trades: pd.DataFrame, mode: str) -> go.Figure:
                                          marker=dict(symbol=sym, size=8, color=color),
                                          hovertemplate=f"{reason} %{{y:,.0f}} $<extra></extra>"), row=1, col=1)
     cvd = d["cvd"] / 1e6
-    fig.add_trace(go.Bar(x=x, y=cvd, name="Spot-CVD 24h (Mio. $)",
+    fig.add_trace(go.Bar(x=x, y=cvd, name=f"Spot-CVD {win} (Mio. $)",
                          marker=dict(color=[STATUS["ok"] if v > 0 else STATUS["NA"] for v in cvd.fillna(0)],
                                      line=dict(width=0)),
                          hovertemplate="%{y:+,.1f} Mio. $<extra></extra>"), row=2, col=1)
     fig.update_yaxes(title_text="USD", row=1, col=1)
     fig.update_yaxes(title_text="Mio. $", row=2, col=1)
     end = x.iloc[-1]
-    fig.update_xaxes(range=[end - pd.Timedelta(days=90), end + pd.Timedelta(hours=6)],
-                     rangeselector=dict(buttons=[dict(count=30, label="30T", step="day", stepmode="backward"),
+    fig.update_xaxes(range=[end - pd.Timedelta(days=view_days), end + pd.Timedelta(days=view_days / 60)],
+                     rangeselector=dict(buttons=[dict(count=1, label="1T", step="day", stepmode="backward"),
+                                                 dict(count=7, label="7T", step="day", stepmode="backward"),
+                                                 dict(count=30, label="30T", step="day", stepmode="backward"),
                                                  dict(count=90, label="90T", step="day", stepmode="backward"),
                                                  dict(count=1, label="1J", step="year", stepmode="backward"),
                                                  dict(step="all", label="Alles")],
                                         bgcolor=p["surface"], font=dict(color=p["text2"])), row=1, col=1)
-    fig = base_layout(fig, mode, "BTC mit Signalen – Hintergrund grün = Bull, rot = Bär (oben) · Spot-CVD 24h (unten)", height=560)
+    fig = base_layout(fig, mode, f"BTC mit Signalen – Hintergrund grün = Bull, rot = Bär (oben) · Spot-CVD {win} (unten)", height=560)
     fig.update_layout(hovermode="x unified", bargap=0)
     return fig
