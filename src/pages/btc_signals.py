@@ -8,7 +8,9 @@ from plotly.subplots import make_subplots
 
 from src.components.ui import plot, theme_mode
 from src.crypto import btc_signal
-from src.crypto.btc_signal import Rule, backtest, compute, regime_runs, stats, stats_by_regime, status
+from src.crypto.btc_signal import (Rule, backtest, compute, multi_window, regime_runs, stats, stats_by_regime,
+                                   status)
+from src.crypto.hyblock_strategies import scan_frame, strategies_frame
 from src.visualization.charts import PALETTE, STATUS, base_layout
 
 
@@ -54,6 +56,12 @@ def page() -> None:
         sl = c[3].number_input("Stop Loss (%)", 0.2, 20.0, pr["sl"], 0.1, key=f"btc_sl_{tf}")
         days = c[4].selectbox("Backtest-Zeitraum", pr["days_opts"], index=pr["days_opts"].index(pr["days"]),
                               key=f"btc_days_{tf}", format_func=_days)
+        c = st.columns([2, 1])
+        cvd_mode = c[0].radio("CVD-Bedingung", ["zero", "pct"], horizontal=True, key="btc_cvd_mode",
+                              format_func=lambda m: "CVD > 0 (streng)" if m == "zero" else
+                              "CVD über eigenem Normalwert (Perzentil, reagiert früher)")
+        cvd_pct = c[1].number_input("Perzentil-Schwelle (90 Tage)", 50, 99, 80, 5, key="btc_cvd_pct",
+                                    disabled=cvd_mode == "zero")
         c = st.columns([3, 1])
         bull_only = c[0].toggle("Nur Signale im Bull-Regime handeln (BTC über dem 200-Tage-Schnitt)", value=False,
                                 key="btc_bull_only")
@@ -61,7 +69,7 @@ def page() -> None:
         st.caption("1 Std Standard (TP 2 % / SL 6 %): hohe Trefferquote, aber ein Verlust kostet drei Gewinne. "
                    "Alternative mit besserem Chance-Risiko-Verhältnis: TP 6 % / SL 4 %.")
     rule = Rule(drop_pct=drop, window_h=int(win_h), timeframe=tf, tp_pct=tp, sl_pct=sl, fee_pct=fee,
-                bull_only=bull_only)
+                bull_only=bull_only, cvd_mode=cvd_mode, cvd_pct=float(cvd_pct))
     w = _win(rule.window_h)
 
     try:
@@ -88,7 +96,8 @@ def page() -> None:
                 "Bedingung erfüllt" if s["price_ok"] else f"fehlt noch {s['missing_drop']:.2f} %",
                 delta_color="normal" if s["price_ok"] else "off")
     c[2].metric(f"Spot-CVD {w} (Binance)", _mio(s["cvd"]),
-                "Spot kauft netto" if s["cvd_ok"] else "Spot verkauft netto",
+                (f"Perzentil {s['cvd_rank']:.0f} (90 T)" if rule.cvd_mode == "pct" and s.get("cvd_rank") == s.get("cvd_rank")
+                 else "Spot kauft netto" if s["cvd"] > 0 else "Spot verkauft netto"),
                 delta_color="normal" if s["cvd_ok"] else "inverse")
     c[3].metric("Signal", "AKTIV" if s["active"] else "kein Signal",
                 "beide Bedingungen erfüllt" if s["active"] else
@@ -107,7 +116,7 @@ def page() -> None:
                    f"{s['close'] * (1 + tp / 100):,.0f} $, Stop Loss {s['close'] * (1 - sl / 100):,.0f} $."
                    .replace(",", "'"))
     elif s["cvd_ok"]:
-        st.info(f"Spot kauft bereits netto – das Signal kommt, falls BTC im {w}-Fenster noch {s['missing_drop']:.2f} % "
+        st.info(f"CVD-Bedingung erfüllt – das Signal kommt, falls BTC im {w}-Fenster noch {s['missing_drop']:.2f} % "
                 f"mehr fällt (unter ca. {s['close'] * (1 - s['missing_drop'] / 100):,.0f} $).".replace(",", "'"))
     else:
         st.caption("Kein Setup: Spot-Käufer fehlen. Ein Preisrückgang allein reicht nicht.")
@@ -116,6 +125,18 @@ def page() -> None:
         st.warning(f"Offener Signal-Trade seit {open_trade['Einstieg'].tz_convert('Europe/Zurich'):%d.%m. %H:%M}: "
                    f"Einstieg {open_trade['Einstiegspreis']:,.0f} $, aktuell {open_trade['Offen %']:+.2f} % · "
                    f"TP {open_trade['Take Profit']:,.0f} $ · SL {open_trade['Stop Loss']:,.0f} $".replace(",", "'"))
+
+    # --- Mehrere Fenster ---
+    st.subheader("Spot-CVD über mehrere Fenster")
+    mw = multi_window(raw, rule)
+    if len(mw):
+        pc = [c for c in mw.columns if c.startswith("CVD-Perzentil")][0]
+        st.dataframe(mw, hide_index=True, width="stretch",
+                     column_config={"Preisänderung %": st.column_config.NumberColumn(format="%+.2f %%"),
+                                    "Spot-CVD Mio. $": st.column_config.NumberColumn(format="%+,.1f"),
+                                    pc: st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f")})
+        st.caption("Perzentil = wo das CVD heute im Vergleich zu den letzten 90 Tagen steht (100 = stärkster "
+                   "Spot-Kaufdruck). Fallender Preis bei hohem Perzentil = Spot-Käufer nehmen den Abverkauf auf.")
 
     # --- Backtest-Kennzahlen ---
     st.subheader("Backtest")
@@ -143,6 +164,21 @@ def page() -> None:
                      column_config={"Einstiegspreis": st.column_config.NumberColumn(format="%.0f"),
                                     "Ausstiegspreis": st.column_config.NumberColumn(format="%.0f"),
                                     "PnL %": st.column_config.NumberColumn(format="%+.2f %%")})
+
+    st.subheader("Hyblock-Strategien (Tier 3, getestet 23.11.2026)")
+    st.caption("Mit Hyblock Capital über 2 Jahre gebacktestet (BTC, Binance-Perp, Gebühren 0,045 % pro Seite). "
+               "Jahr 2 ist die Kontrolle auf neueren Daten. Diese Indikatoren gibt es nur bei Hyblock – live laufen die "
+               "Strategien dort als Alarm, nicht hier im Dashboard.")
+    st.dataframe(strategies_frame(), hide_index=True, width="stretch",
+                 column_config={"Summe %": st.column_config.NumberColumn(format="%+.1f %%"),
+                                "Treffer %": st.column_config.NumberColumn(format="%.0f %%"),
+                                "Regel": st.column_config.TextColumn(width="large")})
+    with st.expander("Alle getesteten Indikatoren (Signal-Statistik, 4 Std, 2 Jahre)"):
+        st.dataframe(scan_frame(), hide_index=True, width="stretch",
+                     column_config={"Treffer nach 3 T %": st.column_config.NumberColumn(format="%.1f %%")})
+        st.caption("Vergleich: Über alle 4-Std-Kerzen stand BTC nach 3 Tagen in 49,6 % der Fälle höher. "
+                   "Bei Shorts zählt ein tieferer Kurs als Treffer. Signale überlappen sich – die Zahlen zeigen "
+                   "eine Tendenz, keine Trade-Statistik.")
 
     with st.expander("Wie verlässlich ist das?"):
         st.markdown(
@@ -203,7 +239,10 @@ def signal_chart(d: pd.DataFrame, trades: pd.DataFrame, mode: str, win: str = "2
                                                  dict(count=90, label="90T", step="day", stepmode="backward"),
                                                  dict(count=1, label="1J", step="year", stepmode="backward"),
                                                  dict(step="all", label="Alles")],
-                                        bgcolor=p["surface"], font=dict(color=p["text2"])), row=1, col=1)
+                                        bgcolor=p["surface"], font=dict(color=p["text2"]),
+                                        x=0, xanchor="left", y=1.01, yanchor="bottom"), row=1, col=1)
     fig = base_layout(fig, mode, f"BTC mit Signalen – Hintergrund grün = Bull, rot = Bär (oben) · Spot-CVD {win} (unten)", height=560)
-    fig.update_layout(hovermode="x unified", bargap=0)
+    # Legende unter den Chart, damit sie nicht mit den Zoom-Knöpfen oben kollidiert
+    fig.update_layout(hovermode="x unified", bargap=0, margin=dict(t=70, b=60),
+                      legend=dict(orientation="h", yanchor="top", y=-0.06, xanchor="left", x=0))
     return fig

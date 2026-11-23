@@ -138,3 +138,24 @@ def test_trade_duration_in_hours_for_15m():
     d = bs.compute(_frame(closes, buy_share=0.6), rule)
     trades, _ = bs.backtest(d, rule)
     assert len(trades) == 1 and trades.iloc[0]["Dauer h"] == pytest.approx(0.5)
+
+
+def test_cvd_percentile_mode_and_multi_window():
+    rng = np.random.default_rng(5)
+    n = 24 * 120
+    closes = list(60000 * np.exp(np.cumsum(rng.normal(0, 0.006, n))))
+    df = _frame(closes, buy_share=list(rng.uniform(0.4, 0.6, n)))
+    d0 = bs.compute(df, bs.Rule())
+    d1 = bs.compute(df, bs.Rule(cvd_mode="pct", cvd_pct=80))
+    assert d1["cvd_rank"].dropna().between(0, 100).all()
+    assert (d1["cvd_ok"] == (d1["cvd_rank"] > 80)).all()
+    assert d0["cvd_ok"].equals(d0["cvd"] > 0)
+    mw = bs.multi_window(df, bs.Rule())
+    assert list(mw["Fenster"]) == ["4 h", "24 h", "3 T", "7 T"]
+
+
+def test_strategy_tables():
+    from src.crypto.hyblock_strategies import scan_frame, strategies_frame
+    s = strategies_frame()
+    assert {"Name", "Regel", "Trades", "Summe %", "Jahr 1", "Jahr 2"} <= set(s.columns)
+    assert len(scan_frame()) >= 6

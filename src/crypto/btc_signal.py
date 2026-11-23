@@ -43,6 +43,9 @@ class Rule:
     fee_pct: float = 0.045     # Gebühr pro Seite in %
     regime_days: int = 200     # Regime: Tagesschluss über (Bull) / unter (Bär) dem gleitenden Schnitt
     bull_only: bool = False    # Signale nur im Bull-Regime handeln
+    cvd_mode: str = "zero"     # "zero": CVD > 0 · "pct": CVD über seinem Perzentil der letzten `pct_days` Tage
+    cvd_pct: float = 80.0      # Perzentil-Schwelle für cvd_mode="pct"
+    pct_days: int = 90
 
     @property
     def bar_min(self) -> int:
@@ -102,11 +105,40 @@ def compute(df: pd.DataFrame, rule: Rule = Rule(), daily: pd.DataFrame | None = 
     w = rule.window
     out["chg_pct"] = (out["close"] / out["close"].shift(w) - 1) * 100
     out["cvd"] = out["delta"].rolling(w).sum()
+    out["cvd_rank"] = cvd_rank(out["cvd"], rule)
     out = add_regime(out, rule.regime_days, daily)
-    out["signal"] = (out["chg_pct"] < -rule.drop_pct) & (out["cvd"] > 0) & out["closed"]
+    out["cvd_ok"] = out["cvd"] > 0 if rule.cvd_mode == "zero" else out["cvd_rank"] > rule.cvd_pct
+    out["signal"] = (out["chg_pct"] < -rule.drop_pct) & out["cvd_ok"] & out["closed"]
     if rule.bull_only:
         out["signal"] &= out["regime"] == "Bull"
     return out
+
+
+def cvd_rank(cvd: pd.Series, rule: Rule) -> pd.Series:
+    """Perzentil (0–100) des aktuellen CVD unter den Werten der letzten `pct_days` Tage."""
+    n = max(10, round(rule.pct_days * 24 * 60 / rule.bar_min))
+    return cvd.rolling(n, min_periods=max(10, n // 4)).rank(pct=True) * 100
+
+
+WINDOWS_H = (4, 24, 72, 168)
+
+
+def multi_window(df: pd.DataFrame, rule: Rule = Rule(), windows=WINDOWS_H) -> pd.DataFrame:
+    """Preisänderung, Spot-CVD und CVD-Perzentil für mehrere Fenster gleichzeitig (letzte abgeschlossene Kerze)."""
+    d = df[df["closed"]]
+    rows = []
+    for h in windows:
+        r = Rule(timeframe=rule.timeframe, window_h=h, pct_days=rule.pct_days)
+        w = r.window
+        if len(d) <= w:
+            continue
+        cvd = d["delta"].rolling(w).sum()
+        rank = cvd_rank(cvd, r)
+        rows.append({"Fenster": f"{h // 24} T" if h >= 48 else f"{h} h",
+                     "Preisänderung %": (d["close"].iloc[-1] / d["close"].iloc[-1 - w] - 1) * 100,
+                     "Spot-CVD Mio. $": cvd.iloc[-1] / 1e6,
+                     f"CVD-Perzentil ({rule.pct_days} T)": rank.iloc[-1]})
+    return pd.DataFrame(rows)
 
 
 def add_regime(d: pd.DataFrame, days: int = 200, daily_df: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -200,8 +232,8 @@ def status(d: pd.DataFrame, rule: Rule = Rule()) -> dict:
     """Lage der letzten abgeschlossenen Kerze: wie weit ist das Signal entfernt?"""
     last = d[d["closed"]].iloc[-1]
     price_ok = bool(last["chg_pct"] < -rule.drop_pct)
-    cvd_ok = bool(last["cvd"] > 0)
+    cvd_ok = bool(last["cvd_ok"]) if "cvd_ok" in last else bool(last["cvd"] > 0)
     return {"ts": last["ts"], "close": float(last["close"]), "regime": last.get("regime"),
             "sma_regime": last.get("sma_regime"), "chg_pct": float(last["chg_pct"]),
-            "cvd": float(last["cvd"]), "price_ok": price_ok, "cvd_ok": cvd_ok, "active": price_ok and cvd_ok,
+            "cvd": float(last["cvd"]), "cvd_rank": last.get("cvd_rank"), "price_ok": price_ok, "cvd_ok": cvd_ok, "active": price_ok and cvd_ok,
             "missing_drop": max(0.0, float(last["chg_pct"]) + rule.drop_pct)}
