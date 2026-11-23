@@ -23,7 +23,7 @@ if is_cloud():
 from src.components.data import db_exists
 from src.components.ui import CSS
 from src.config import ConfigError, get_settings
-from src.pages import (compare, consensus, cot, data_admin, fundamental, gex, method, ml_backtest, ml_effects, ml_forecast, ml_regime, ml_terminal, ml_top,
+from src.pages import (btc_signals, compare, consensus, cot, data_admin, fundamental, gex, method, ml_backtest, ml_effects, ml_forecast, ml_regime, ml_terminal, ml_top,
                        overview, pizza, champagne, ipo,
                        profile, quality, sectors, table)
 
@@ -94,6 +94,9 @@ if db_exists():
                     url_path="ml-wirkung"),
             st.Page(ml_regime.page, title="Marktregime", icon=":material/show_chart:", url_path="marktregime"),
             st.Page(ml_top.page, title="Top-Warnung", icon=":material/warning:", url_path="top-warnung"),
+        ],
+        "Krypto": [
+            st.Page(btc_signals.page, title="BTC-Signale", icon=":material/currency_bitcoin:", url_path="btc-signale"),
         ],
         "Daten": [st.Page(quality.page, title="Datenqualität", icon=":material/fact_check:", url_path="qualitaet"),
                   admin, meth],
